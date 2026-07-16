@@ -32,6 +32,7 @@ pub(super) const STRINGS: Strings = Strings {
     update_prompt_now: "バージョン {version} が利用可能です。今すぐ更新しますか？",
     exit: "終了",
     show_widget: "ウィジェットを表示",
+    show_time_progress: "経過時間バーを表示",
     session_window: "5h",
     weekly_window: "7d",
     now: "今",

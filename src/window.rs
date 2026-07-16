@@ -70,6 +70,7 @@ struct AppState {
     show_claude_code: bool,
     show_codex: bool,
     show_antigravity: bool,
+    show_time_progress: bool,
 
     data: Option<AppUsageData>,
 
@@ -131,6 +132,7 @@ const IDM_LANG_PORTUGUESE_BRAZIL: u16 = 50;
 const IDM_MODEL_CLAUDE_CODE: u16 = 60;
 const IDM_MODEL_CODEX: u16 = 61;
 const IDM_MODEL_ANTIGRAVITY: u16 = 62;
+const IDM_SHOW_TIME_PROGRESS: u16 = 70;
 
 const WM_DPICHANGED_MSG: u32 = 0x02E0;
 const WM_APP_UPDATE_CHECK_COMPLETE: u32 = WM_APP + 2;
@@ -316,6 +318,8 @@ struct SettingsFile {
     show_codex: bool,
     #[serde(default = "default_show_antigravity")]
     show_antigravity: bool,
+    #[serde(default = "default_show_time_progress")]
+    show_time_progress: bool,
 }
 
 impl Default for SettingsFile {
@@ -330,6 +334,7 @@ impl Default for SettingsFile {
             show_claude_code: true,
             show_codex: false,
             show_antigravity: false,
+            show_time_progress: true,
         }
     }
 }
@@ -352,6 +357,10 @@ fn default_show_codex() -> bool {
 
 fn default_show_antigravity() -> bool {
     false
+}
+
+fn default_show_time_progress() -> bool {
+    true
 }
 
 fn load_settings() -> SettingsFile {
@@ -391,6 +400,7 @@ fn save_state_settings() {
             show_claude_code: s.show_claude_code,
             show_codex: s.show_codex,
             show_antigravity: s.show_antigravity,
+            show_time_progress: s.show_time_progress,
         });
     }
 }
@@ -1060,6 +1070,12 @@ const MODEL_RIGHT_MARGIN: i32 = 3;
 const RIGHT_MARGIN: i32 = 1;
 const WIDGET_HEIGHT: i32 = 46;
 
+const TIME_BAR_H: i32 = 2;
+const TIME_BAR_GAP: i32 = 2;
+
+const SESSION_WINDOW_SECS: f64 = 5.0 * 3600.0;
+const WEEKLY_WINDOW_SECS: f64 = 7.0 * 86400.0;
+
 fn is_drag_handle_point(client_x: i32, client_y: i32) -> bool {
     let divider_h = sc(25);
     let divider_top = (sc(WIDGET_HEIGHT) - divider_h) / 2;
@@ -1154,6 +1170,70 @@ fn codex_usage_text_color(is_dark: bool) -> Color {
         Color::from_hex("#F5F5F5")
     } else {
         Color::from_hex("#1F1F1F")
+    }
+}
+
+fn time_progress_color(is_dark: bool) -> Color {
+    if is_dark {
+        Color::from_hex("#5FA8DC")
+    } else {
+        Color::from_hex("#2E7CB8")
+    }
+}
+
+/// Elapsed-time fractions (0.0..=1.0) for each visible usage window, or None
+/// when no reset time is known (e.g. no active session) or the bars are hidden.
+#[derive(Clone, Copy, Default)]
+struct TimeProgress {
+    claude_session: Option<f64>,
+    claude_weekly: Option<f64>,
+    codex_session: Option<f64>,
+    codex_weekly: Option<f64>,
+    antigravity_session: Option<f64>,
+    antigravity_weekly: Option<f64>,
+}
+
+fn window_elapsed_fraction(resets_at: Option<SystemTime>, window_secs: f64) -> Option<f64> {
+    let resets_at = resets_at?;
+    let remaining = resets_at
+        .duration_since(SystemTime::now())
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    Some((1.0 - remaining / window_secs).clamp(0.0, 1.0))
+}
+
+fn time_progress_from_state(s: &AppState) -> TimeProgress {
+    if !s.show_time_progress {
+        return TimeProgress::default();
+    }
+    let Some(data) = s.data.as_ref() else {
+        return TimeProgress::default();
+    };
+    TimeProgress {
+        claude_session: data
+            .claude_code
+            .as_ref()
+            .and_then(|u| window_elapsed_fraction(u.session.resets_at, SESSION_WINDOW_SECS)),
+        claude_weekly: data
+            .claude_code
+            .as_ref()
+            .and_then(|u| window_elapsed_fraction(u.weekly.resets_at, WEEKLY_WINDOW_SECS)),
+        codex_session: data
+            .codex
+            .as_ref()
+            .and_then(|u| window_elapsed_fraction(u.session.resets_at, SESSION_WINDOW_SECS)),
+        codex_weekly: data
+            .codex
+            .as_ref()
+            .and_then(|u| window_elapsed_fraction(u.weekly.resets_at, WEEKLY_WINDOW_SECS)),
+        antigravity_session: data
+            .antigravity
+            .as_ref()
+            .and_then(|u| window_elapsed_fraction(u.session.resets_at, SESSION_WINDOW_SECS)),
+        antigravity_weekly: data
+            .antigravity
+            .as_ref()
+            .and_then(|u| window_elapsed_fraction(u.weekly.resets_at, WEEKLY_WINDOW_SECS)),
     }
 }
 
@@ -1310,6 +1390,7 @@ pub fn run() {
                 show_claude_code: settings.show_claude_code,
                 show_codex: settings.show_codex,
                 show_antigravity: settings.show_antigravity,
+                show_time_progress: settings.show_time_progress,
                 data: None,
                 poll_interval_ms: settings.poll_interval_ms,
                 retry_count: 0,
@@ -1435,6 +1516,7 @@ fn render_layered() {
         show_claude_code,
         show_codex,
         show_antigravity,
+        time_progress,
     ) = {
         let state = lock_state();
         match state.as_ref() {
@@ -1458,6 +1540,7 @@ fn render_layered() {
                 s.show_claude_code,
                 s.show_codex,
                 s.show_antigravity,
+                time_progress_from_state(s),
             ),
             None => return,
         }
@@ -1555,6 +1638,7 @@ fn render_layered() {
             show_antigravity,
             &codex_accent,
             &antigravity_accent,
+            time_progress,
         );
 
         // Background pixels → alpha 1 (nearly invisible but still hittable for right-click).
@@ -1631,6 +1715,7 @@ fn paint_content(
     show_antigravity: bool,
     codex_accent: &Color,
     antigravity_accent: &Color,
+    time_progress: TimeProgress,
 ) {
     unsafe {
         let client_rect = RECT {
@@ -1727,6 +1812,9 @@ fn paint_content(
             codex_accent,
             antigravity_accent,
             track,
+            time_progress.claude_session,
+            time_progress.codex_session,
+            time_progress.antigravity_session,
         );
         draw_row(
             hdc,
@@ -1748,6 +1836,9 @@ fn paint_content(
             codex_accent,
             antigravity_accent,
             track,
+            time_progress.claude_weekly,
+            time_progress.codex_weekly,
+            time_progress.antigravity_weekly,
         );
 
         SelectObject(hdc, old_font);
@@ -2633,6 +2724,16 @@ unsafe extern "system" fn wnd_proc(
                         do_poll(sh);
                     });
                 }
+                IDM_SHOW_TIME_PROGRESS => {
+                    {
+                        let mut state = lock_state();
+                        if let Some(s) = state.as_mut() {
+                            s.show_time_progress = !s.show_time_progress;
+                        }
+                    }
+                    save_state_settings();
+                    render_layered();
+                }
                 IDM_LANG_SYSTEM
                 | IDM_LANG_ENGLISH
                 | IDM_LANG_DUTCH
@@ -2715,6 +2816,7 @@ fn show_context_menu(hwnd: HWND) {
             show_claude_code,
             show_codex,
             show_antigravity,
+            show_time_progress,
         ) = {
             let state = lock_state();
             match state.as_ref() {
@@ -2729,6 +2831,7 @@ fn show_context_menu(hwnd: HWND) {
                     s.show_claude_code,
                     s.show_codex,
                     s.show_antigravity,
+                    s.show_time_progress,
                 ),
                 None => (
                     POLL_15_MIN,
@@ -2741,6 +2844,7 @@ fn show_context_menu(hwnd: HWND) {
                     true,
                     false,
                     false,
+                    true,
                 ),
             }
         };
@@ -2908,6 +3012,19 @@ fn show_context_menu(hwnd: HWND) {
             PCWSTR::from_raw(language_label.as_ptr()),
         );
 
+        let time_progress_str = native_interop::wide_str(strings.show_time_progress);
+        let time_progress_flags = if show_time_progress {
+            MF_CHECKED
+        } else {
+            MENU_ITEM_FLAGS(0)
+        };
+        let _ = AppendMenuW(
+            settings_menu,
+            time_progress_flags,
+            IDM_SHOW_TIME_PROGRESS as usize,
+            PCWSTR::from_raw(time_progress_str.as_ptr()),
+        );
+
         let _ = AppendMenuW(settings_menu, MF_SEPARATOR, 0, PCWSTR::null());
 
         let version_label =
@@ -2987,6 +3104,7 @@ fn paint(hdc: HDC, hwnd: HWND) {
         show_claude_code,
         show_codex,
         show_antigravity,
+        time_progress,
     ) = {
         let state = lock_state();
         match state.as_ref() {
@@ -3008,6 +3126,7 @@ fn paint(hdc: HDC, hwnd: HWND) {
                 s.show_claude_code,
                 s.show_codex,
                 s.show_antigravity,
+                time_progress_from_state(s),
             ),
             None => return,
         }
@@ -3073,6 +3192,7 @@ fn paint(hdc: HDC, hwnd: HWND) {
             show_antigravity,
             &codex_accent,
             &antigravity_accent,
+            time_progress,
         );
 
         let _ = BitBlt(hdc, 0, 0, width, height, mem_dc, 0, 0, SRCCOPY);
@@ -3103,8 +3223,12 @@ fn draw_row(
     codex_accent: &Color,
     antigravity_accent: &Color,
     track: &Color,
+    claude_time: Option<f64>,
+    codex_time: Option<f64>,
+    antigravity_time: Option<f64>,
 ) {
     let seg_h = sc(SEGMENT_H);
+    let time_color = time_progress_color(is_dark);
     let active_models = active_model_count(show_claude_code, show_codex, show_antigravity);
     let segment_count = row_bar_segment_count(active_models);
     let use_model_text_colors = active_models > 1;
@@ -3152,6 +3276,8 @@ fn draw_row(
                 claude_accent,
                 track,
                 &claude_value_color,
+                claude_time,
+                &time_color,
             );
             model_x += model_usage_width(segment_count) + sc(MODEL_RIGHT_MARGIN);
         }
@@ -3166,6 +3292,8 @@ fn draw_row(
                 codex_accent,
                 track,
                 &codex_value_color,
+                codex_time,
+                &time_color,
             );
             model_x += model_usage_width(segment_count) + sc(MODEL_RIGHT_MARGIN);
         }
@@ -3180,6 +3308,8 @@ fn draw_row(
                 antigravity_accent,
                 track,
                 &antigravity_value_color,
+                antigravity_time,
+                &time_color,
             );
         }
     }
@@ -3201,6 +3331,8 @@ fn draw_usage_bar(
     accent: &Color,
     track: &Color,
     text_color: &Color,
+    time_fraction: Option<f64>,
+    time_color: &Color,
 ) {
     let seg_w = sc(SEGMENT_W);
     let seg_h = sc(SEGMENT_H);
@@ -3253,6 +3385,37 @@ fn draw_usage_bar(
                     let _ = SelectClipRgn(hdc, HRGN::default());
                     let _ = DeleteObject(rgn);
                 }
+            }
+        }
+
+        // Thin elapsed-time bar just below the usage segments (issue #53):
+        // lets the user compare time progression against usage accumulation.
+        if let Some(fraction) = time_fraction {
+            let bar_w = segment_count * (seg_w + seg_gap) - seg_gap;
+            let bar_top = y + seg_h + sc(TIME_BAR_GAP);
+            let bar_bottom = bar_top + sc(TIME_BAR_H).max(1);
+
+            let track_rect = RECT {
+                left: bar_x,
+                top: bar_top,
+                right: bar_x + bar_w,
+                bottom: bar_bottom,
+            };
+            let track_brush = CreateSolidBrush(COLORREF(track.to_colorref()));
+            FillRect(hdc, &track_rect, track_brush);
+            let _ = DeleteObject(track_brush);
+
+            let fill_w = ((bar_w as f64 * fraction).round() as i32).min(bar_w);
+            if fill_w > 0 {
+                let fill_rect = RECT {
+                    left: bar_x,
+                    top: bar_top,
+                    right: bar_x + fill_w,
+                    bottom: bar_bottom,
+                };
+                let fill_brush = CreateSolidBrush(COLORREF(time_color.to_colorref()));
+                FillRect(hdc, &fill_rect, fill_brush);
+                let _ = DeleteObject(fill_brush);
             }
         }
 
