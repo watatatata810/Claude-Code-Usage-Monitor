@@ -1558,16 +1558,21 @@ fn format_countdown_from_secs(total_secs: u64, strings: Strings) -> String {
     let total_hours = total_secs / 3600;
     let total_days = total_secs / 86400;
 
+    // Ceiling-based display: the true remaining time is never longer than shown.
     if total_days >= 1 {
         format!(
             "{:.1}{}",
-            total_secs as f64 / 86400.0,
+            total_secs.div_ceil(8640) as f64 / 10.0,
             strings.day_suffix
         )
     } else if total_hours >= 1 {
-        format!("{:.1}{}", total_secs as f64 / 3600.0, strings.hour_suffix)
+        format!(
+            "{:.1}{}",
+            total_secs.div_ceil(360) as f64 / 10.0,
+            strings.hour_suffix
+        )
     } else if total_mins >= 1 {
-        format!("{total_mins}{}", strings.minute_suffix)
+        format!("{}{}", total_secs.div_ceil(60), strings.minute_suffix)
     } else {
         format!("{total_secs}{}", strings.second_suffix)
     }
@@ -1580,11 +1585,11 @@ fn time_until_display_change_from_secs(total_secs: u64) -> Duration {
 
     let secs_until_change = if total_days >= 1 {
         // Display may also change by dropping into the hours format at 1d
-        secs_until_decimal_display_change(total_secs, 86400).min(total_secs - 86400 + 1)
+        secs_until_ceil_display_change(total_secs, 8640).min(total_secs - 86400 + 1)
     } else if total_hours >= 1 {
-        secs_until_decimal_display_change(total_secs, 3600).min(total_secs - 3600 + 1)
+        secs_until_ceil_display_change(total_secs, 360).min(total_secs - 3600 + 1)
     } else if total_mins >= 1 {
-        total_secs - total_mins * 60 + 1
+        secs_until_ceil_display_change(total_secs, 60)
     } else {
         1
     };
@@ -1592,17 +1597,14 @@ fn time_until_display_change_from_secs(total_secs: u64) -> Duration {
     Duration::from_secs(secs_until_change)
 }
 
-/// Seconds until a "{:.1}"-formatted value of total_secs/unit displays differently.
-fn secs_until_decimal_display_change(total_secs: u64, unit: u64) -> u64 {
-    let tenth = unit as f64 / 10.0;
-    let displayed_tenths = (total_secs as f64 / tenth).round();
-    // Rounding half away from zero: the display drops once the value falls
-    // strictly below (displayed_tenths - 0.5) tenths.
-    let boundary = (displayed_tenths - 0.5) * tenth;
-    if boundary <= 0.0 {
-        return 1;
+/// Seconds until a ceiling-based display bucket of the given size shows a different value.
+fn secs_until_ceil_display_change(total_secs: u64, bucket_secs: u64) -> u64 {
+    let rem = total_secs % bucket_secs;
+    if rem == 0 {
+        bucket_secs
+    } else {
+        rem
     }
-    ((total_secs as f64 - boundary).ceil() as u64).saturating_add(1)
 }
 
 /// Returns true if either section has reached "now" (reset time has passed).
@@ -1623,28 +1625,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn countdown_uses_one_decimal_for_hours_and_days() {
+    fn countdown_rounds_up_so_display_never_understates() {
         let strings = crate::localization::LanguageId::English.strings();
-        // 1h43m -> 1.7h
-        assert_eq!(format_countdown_from_secs(6180, strings), "1.7h");
-        // 1d10h -> 1.4d
-        assert_eq!(format_countdown_from_secs(122_400, strings), "1.4d");
-        // below one hour keeps integer minutes
+        // 1h43m -> 1.8h (true remaining is never longer than shown)
+        assert_eq!(format_countdown_from_secs(6180, strings), "1.8h");
+        // exactly 1.7h stays 1.7h
+        assert_eq!(format_countdown_from_secs(6120, strings), "1.7h");
+        // 1d10h -> 1.5d
+        assert_eq!(format_countdown_from_secs(122_400, strings), "1.5d");
+        // minutes are ceiled too: 43m00s -> 43m, 43m01s -> 44m
         assert_eq!(format_countdown_from_secs(2_580, strings), "43m");
+        assert_eq!(format_countdown_from_secs(2_581, strings), "44m");
         assert_eq!(format_countdown_from_secs(59, strings), "59s");
     }
 
     #[test]
-    fn display_change_matches_decimal_granularity() {
-        // 3650s displays "1.0h"; drops to "59m" once below 3600s
+    fn display_change_matches_ceil_granularity() {
+        // 3650s displays "1.1h"; drops to "1.0h" at exactly 3600s
         assert_eq!(
             time_until_display_change_from_secs(3650),
-            Duration::from_secs(51)
+            Duration::from_secs(50)
         );
-        // 100000s displays "1.2d" (11.57 tenths); drops to "1.1d" below 99360s
+        // 100000s displays "1.2d"; drops to "1.1d" at 95040s (11 * 8640)
         assert_eq!(
             time_until_display_change_from_secs(100_000),
-            Duration::from_secs(641)
+            Duration::from_secs(4960)
+        );
+        // at an exact hours boundary the next change is the switch to minutes
+        assert_eq!(
+            time_until_display_change_from_secs(3600),
+            Duration::from_secs(1)
         );
     }
 
