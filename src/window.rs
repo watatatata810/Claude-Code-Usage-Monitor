@@ -1219,6 +1219,8 @@ const SEGMENT_W: i32 = 10;
 const SEGMENT_H: i32 = 13;
 const SEGMENT_GAP: i32 = 1;
 const SEGMENT_COUNT: i32 = 10;
+// The weekly row uses one segment per day of the 7-day window.
+const WEEKLY_SEGMENT_COUNT: i32 = 7;
 const CORNER_RADIUS: i32 = 2;
 
 const LEFT_DIVIDER_W: i32 = 3;
@@ -1972,6 +1974,7 @@ fn paint_content(
             is_dark,
             text_color,
             strings.session_window,
+            None,
             session_pct,
             session_text,
             codex_session_pct,
@@ -1996,6 +1999,7 @@ fn paint_content(
             is_dark,
             text_color,
             strings.weekly_window,
+            Some(WEEKLY_SEGMENT_COUNT),
             weekly_pct,
             weekly_text,
             codex_weekly_pct,
@@ -3453,6 +3457,7 @@ fn draw_row(
     is_dark: bool,
     text_color: &Color,
     label: &str,
+    segments_override: Option<i32>,
     claude_percent: f64,
     claude_text: &str,
     codex_percent: f64,
@@ -3473,7 +3478,11 @@ fn draw_row(
     let seg_h = sc(SEGMENT_H);
     let time_color = time_progress_color(is_dark);
     let active_models = active_model_count(show_claude_code, show_codex, show_antigravity);
-    let segment_count = row_bar_segment_count(active_models);
+    let layout_segments = row_bar_segment_count(active_models);
+    let segment_count = segments_override.unwrap_or(layout_segments);
+    // The bar always spans the width dictated by the layout segment count, so
+    // rows with a different segment count stay aligned with each other.
+    let bar_w = (sc(SEGMENT_W) + sc(SEGMENT_GAP)) * layout_segments - sc(SEGMENT_GAP);
     let use_model_text_colors = active_models > 1;
     let claude_value_color = if use_model_text_colors {
         claude_usage_text_color(is_dark)
@@ -3514,6 +3523,7 @@ fn draw_row(
                 model_x,
                 y,
                 segment_count,
+                bar_w,
                 claude_percent,
                 claude_text,
                 claude_accent,
@@ -3522,7 +3532,7 @@ fn draw_row(
                 claude_time,
                 &time_color,
             );
-            model_x += model_usage_width(segment_count) + sc(MODEL_RIGHT_MARGIN);
+            model_x += model_usage_width(layout_segments) + sc(MODEL_RIGHT_MARGIN);
         }
         if show_codex {
             draw_usage_bar(
@@ -3530,6 +3540,7 @@ fn draw_row(
                 model_x,
                 y,
                 segment_count,
+                bar_w,
                 codex_percent,
                 codex_text,
                 codex_accent,
@@ -3538,7 +3549,7 @@ fn draw_row(
                 codex_time,
                 &time_color,
             );
-            model_x += model_usage_width(segment_count) + sc(MODEL_RIGHT_MARGIN);
+            model_x += model_usage_width(layout_segments) + sc(MODEL_RIGHT_MARGIN);
         }
         if show_antigravity {
             draw_usage_bar(
@@ -3546,6 +3557,7 @@ fn draw_row(
                 model_x,
                 y,
                 segment_count,
+                bar_w,
                 antigravity_percent,
                 antigravity_text,
                 antigravity_accent,
@@ -3569,6 +3581,7 @@ fn draw_usage_bar(
     bar_x: i32,
     y: i32,
     segment_count: i32,
+    bar_w: i32,
     percent: f64,
     text: &str,
     accent: &Color,
@@ -3577,7 +3590,6 @@ fn draw_usage_bar(
     time_fraction: Option<f64>,
     time_color: &Color,
 ) {
-    let seg_w = sc(SEGMENT_W);
     let seg_h = sc(SEGMENT_H);
     let seg_gap = sc(SEGMENT_GAP);
     let corner_r = sc(CORNER_RADIUS);
@@ -3585,16 +3597,20 @@ fn draw_usage_bar(
     unsafe {
         let percent_clamped = percent.clamp(0.0, 100.0);
         let segment_percent = 100.0 / segment_count as f64;
+        // Segments are distributed evenly across bar_w, so the bar spans the
+        // same total width regardless of how many segments it is split into.
+        let stride = bar_w + seg_gap;
 
         for i in 0..segment_count {
-            let seg_x = bar_x + i * (seg_w + seg_gap);
+            let seg_left = bar_x + i * stride / segment_count;
+            let seg_right = bar_x + (i + 1) * stride / segment_count - seg_gap;
             let seg_start = (i as f64) * segment_percent;
             let seg_end = seg_start + segment_percent;
 
             let seg_rect = RECT {
-                left: seg_x,
+                left: seg_left,
                 top: y,
-                right: seg_x + seg_w,
+                right: seg_right,
                 bottom: y + seg_h,
             };
 
@@ -3605,12 +3621,12 @@ fn draw_usage_bar(
             } else {
                 draw_rounded_rect(hdc, &seg_rect, track, corner_r);
                 let fraction = (percent_clamped - seg_start) / segment_percent;
-                let fill_width = (seg_w as f64 * fraction) as i32;
+                let fill_width = ((seg_right - seg_left) as f64 * fraction) as i32;
                 if fill_width > 0 {
                     let fill_rect = RECT {
-                        left: seg_x,
+                        left: seg_left,
                         top: y,
-                        right: seg_x + fill_width,
+                        right: seg_left + fill_width,
                         bottom: y + seg_h,
                     };
                     let rgn = CreateRoundRectRgn(
@@ -3634,7 +3650,6 @@ fn draw_usage_bar(
         // Thin elapsed-time bar just below the usage segments (issue #53):
         // lets the user compare time progression against usage accumulation.
         if let Some(fraction) = time_fraction {
-            let bar_w = segment_count * (seg_w + seg_gap) - seg_gap;
             let bar_top = y + seg_h + sc(TIME_BAR_GAP);
             let bar_bottom = bar_top + sc(TIME_BAR_H).max(1);
 
@@ -3662,7 +3677,7 @@ fn draw_usage_bar(
             }
         }
 
-        let text_x = bar_x + segment_count * (seg_w + seg_gap) - seg_gap + sc(BAR_RIGHT_MARGIN);
+        let text_x = bar_x + bar_w + sc(BAR_RIGHT_MARGIN);
         let mut text_wide: Vec<u16> = text.encode_utf16().collect();
         let mut text_rect = RECT {
             left: text_x,
