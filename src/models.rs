@@ -10,6 +10,17 @@ pub struct UsageSection {
 pub struct UsageData {
     pub session: UsageSection,
     pub weekly: UsageSection,
+    /// Weekly limit scoped to a specific model (e.g. Fable). Only some
+    /// Claude subscription plans expose this; `None` when absent.
+    pub weekly_scoped: Option<ScopedUsage>,
+}
+
+/// A usage limit tied to a particular model, surfaced as a colored underlay
+/// on the weekly bar.
+#[derive(Clone, Debug, Default)]
+pub struct ScopedUsage {
+    pub model_name: String,
+    pub section: UsageSection,
 }
 
 #[derive(Clone, Debug, Default)]

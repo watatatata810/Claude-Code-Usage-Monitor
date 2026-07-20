@@ -216,6 +216,18 @@ impl Color {
         colorref(self.r, self.g, self.b)
     }
 
+    /// Linearly interpolate towards `other`. `t == 0.0` yields `self`,
+    /// `t == 1.0` yields `other`, `0.5` the midpoint.
+    pub fn blend(self, other: Color, t: f64) -> Color {
+        let t = t.clamp(0.0, 1.0);
+        let lerp = |a: u8, b: u8| (a as f64 + (b as f64 - a as f64) * t).round() as u8;
+        Color {
+            r: lerp(self.r, other.r),
+            g: lerp(self.g, other.g),
+            b: lerp(self.b, other.b),
+        }
+    }
+
     pub fn from_colorref(cr: u32) -> Self {
         Self {
             r: (cr & 0xFF) as u8,

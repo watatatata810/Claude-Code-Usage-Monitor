@@ -11,7 +11,7 @@ use std::os::windows::process::CommandExt;
 
 use crate::diagnose;
 use crate::localization::Strings;
-use crate::models::{AppUsageData, UsageData, UsageSection};
+use crate::models::{AppUsageData, ScopedUsage, UsageData, UsageSection};
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -47,12 +47,34 @@ pub type CredentialWatchSnapshot = Vec<String>;
 struct UsageResponse {
     five_hour: Option<UsageBucket>,
     seven_day: Option<UsageBucket>,
+    /// Structured, forward-compatible limit list. The model-scoped weekly
+    /// limit (e.g. Fable) only appears here — the top-level `seven_day_*`
+    /// fields are null.
+    limits: Option<Vec<UsageLimit>>,
 }
 
 #[derive(Deserialize)]
 struct UsageBucket {
     utilization: f64,
     resets_at: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct UsageLimit {
+    kind: Option<String>,
+    percent: Option<f64>,
+    resets_at: Option<String>,
+    scope: Option<UsageLimitScope>,
+}
+
+#[derive(Deserialize)]
+struct UsageLimitScope {
+    model: Option<UsageLimitModel>,
+}
+
+#[derive(Deserialize)]
+struct UsageLimitModel {
+    display_name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -719,7 +741,30 @@ fn try_usage_endpoint(token: &str) -> Result<Option<UsageData>, PollError> {
         data.weekly.resets_at = parse_iso8601(bucket.resets_at.as_deref());
     }
 
+    data.weekly_scoped = response.limits.as_deref().and_then(scoped_weekly_limit);
+
     Ok(Some(data))
+}
+
+/// Extract the model-scoped weekly limit (e.g. Fable) from the limits list.
+fn scoped_weekly_limit(limits: &[UsageLimit]) -> Option<ScopedUsage> {
+    let limit = limits
+        .iter()
+        .find(|limit| limit.kind.as_deref() == Some("weekly_scoped"))?;
+    let model_name = limit
+        .scope
+        .as_ref()
+        .and_then(|scope| scope.model.as_ref())
+        .and_then(|model| model.display_name.clone())
+        .unwrap_or_default();
+
+    Some(ScopedUsage {
+        model_name,
+        section: UsageSection {
+            percentage: limit.percent.unwrap_or(0.0),
+            resets_at: parse_iso8601(limit.resets_at.as_deref()),
+        },
+    })
 }
 
 fn fetch_usage_via_messages(token: &str) -> Result<UsageData, PollError> {
@@ -909,7 +954,11 @@ fn fetch_antigravity_usage_from_endpoint(
     let session = fetch_antigravity_model_quota(base_url, token, project.as_deref())?;
     let weekly = UsageSection::default();
 
-    Ok(UsageData { session, weekly })
+    Ok(UsageData {
+        session,
+        weekly,
+        ..Default::default()
+    })
 }
 
 fn fetch_antigravity_project(base_url: &str, token: &str) -> Result<Option<String>, PollError> {
@@ -1665,6 +1714,7 @@ mod tests {
                 resets_at: None,
             },
             weekly: UsageSection::default(),
+            ..Default::default()
         }
     }
 
@@ -1785,5 +1835,35 @@ mod tests {
         assert!((usage.session.percentage - 4.17425).abs() < 0.000001);
         assert!(usage.weekly.resets_at.is_some());
         assert!(usage.session.resets_at.is_some());
+    }
+
+    #[test]
+    fn scoped_weekly_limit_extracts_model_scoped_entry() {
+        let limits: Vec<UsageLimit> = serde_json::from_str(
+            r#"[
+                {"kind": "session", "percent": 40},
+                {"kind": "weekly_all", "percent": 41},
+                {
+                    "kind": "weekly_scoped",
+                    "percent": 77,
+                    "resets_at": "2026-07-24T09:00:00Z",
+                    "scope": {"model": {"display_name": "Fable"}}
+                }
+            ]"#,
+        )
+        .expect("limits should deserialize");
+
+        let scoped = scoped_weekly_limit(&limits).expect("scoped limit present");
+        assert_eq!(scoped.model_name, "Fable");
+        assert!((scoped.section.percentage - 77.0).abs() < f64::EPSILON);
+        assert!(scoped.section.resets_at.is_some());
+    }
+
+    #[test]
+    fn scoped_weekly_limit_absent_returns_none() {
+        let limits: Vec<UsageLimit> =
+            serde_json::from_str(r#"[{"kind": "session", "percent": 40}]"#)
+                .expect("limits should deserialize");
+        assert!(scoped_weekly_limit(&limits).is_none());
     }
 }

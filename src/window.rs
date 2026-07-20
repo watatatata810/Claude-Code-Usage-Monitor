@@ -62,6 +62,10 @@ struct AppState {
     session_text: String,
     weekly_percent: f64,
     weekly_text: String,
+    /// Claude weekly limit scoped to a single model (e.g. Fable), drawn as a
+    /// colored underlay on the 7d bar. 0.0 means no scoped limit is active.
+    weekly_scoped_percent: f64,
+    weekly_scoped_model: String,
     codex_session_percent: f64,
     codex_session_text: String,
     codex_weekly_percent: f64,
@@ -461,12 +465,21 @@ fn tray_icon_data_from_state() -> Vec<tray_icon::TrayIconData> {
                 icons.push(tray_icon::TrayIconData {
                     kind: tray_icon::TrayIconKind::Claude,
                     percent: Some(s.session_percent),
-                    tooltip: format!(
-                        "{} 5h: {} | 7d: {}",
-                        s.language.strings().claude_code_model,
-                        s.session_text,
-                        s.weekly_text
-                    ),
+                    tooltip: {
+                        let mut tooltip = format!(
+                            "{} 5h: {} | 7d: {}",
+                            s.language.strings().claude_code_model,
+                            s.session_text,
+                            s.weekly_text
+                        );
+                        if s.weekly_scoped_percent > 0.0 && !s.weekly_scoped_model.is_empty() {
+                            tooltip.push_str(&format!(
+                                " | {}: {:.0}%",
+                                s.weekly_scoped_model, s.weekly_scoped_percent
+                            ));
+                        }
+                        tooltip
+                    },
                     custom_color: s.icon_color_claude,
                 });
             }
@@ -1542,6 +1555,8 @@ pub fn run() {
                 session_text: "--".to_string(),
                 weekly_percent: 0.0,
                 weekly_text: "--".to_string(),
+                weekly_scoped_percent: 0.0,
+                weekly_scoped_model: String::new(),
                 codex_session_percent: 0.0,
                 codex_session_text: "--".to_string(),
                 codex_weekly_percent: 0.0,
@@ -1680,6 +1695,7 @@ fn render_layered() {
         session_text,
         weekly_pct,
         weekly_text,
+        weekly_scoped_pct,
         codex_session_pct,
         codex_session_text,
         codex_weekly_pct,
@@ -1704,6 +1720,7 @@ fn render_layered() {
                 s.session_text.clone(),
                 s.weekly_percent,
                 s.weekly_text.clone(),
+                s.weekly_scoped_percent,
                 s.codex_session_percent,
                 s.codex_session_text.clone(),
                 s.codex_weekly_percent,
@@ -1800,6 +1817,7 @@ fn render_layered() {
             &session_text,
             weekly_pct,
             &weekly_text,
+            weekly_scoped_pct,
             codex_session_pct,
             &codex_session_text,
             codex_weekly_pct,
@@ -1877,6 +1895,7 @@ fn paint_content(
     session_text: &str,
     weekly_pct: f64,
     weekly_text: &str,
+    weekly_scoped_pct: f64,
     codex_session_pct: f64,
     codex_session_text: &str,
     codex_weekly_pct: f64,
@@ -1977,6 +1996,7 @@ fn paint_content(
             None,
             session_pct,
             session_text,
+            0.0,
             codex_session_pct,
             codex_session_text,
             antigravity_session_pct,
@@ -2002,6 +2022,7 @@ fn paint_content(
             Some(WEEKLY_SEGMENT_COUNT),
             weekly_pct,
             weekly_text,
+            weekly_scoped_pct,
             codex_weekly_pct,
             codex_weekly_text,
             antigravity_weekly_pct,
@@ -2040,9 +2061,18 @@ fn do_poll(send_hwnd: SendHwnd) {
                 if let Some(claude_code) = data.claude_code.as_ref() {
                     s.session_percent = claude_code.session.percentage;
                     s.weekly_percent = claude_code.weekly.percentage;
+                    if let Some(scoped) = claude_code.weekly_scoped.as_ref() {
+                        s.weekly_scoped_percent = scoped.section.percentage;
+                        s.weekly_scoped_model = scoped.model_name.clone();
+                    } else {
+                        s.weekly_scoped_percent = 0.0;
+                        s.weekly_scoped_model = String::new();
+                    }
                 } else if s.show_claude_code {
                     s.session_percent = 0.0;
                     s.weekly_percent = 0.0;
+                    s.weekly_scoped_percent = 0.0;
+                    s.weekly_scoped_model = String::new();
                 }
                 if let Some(codex) = data.codex.as_ref() {
                     s.codex_session_percent = codex.session.percentage;
@@ -3340,6 +3370,7 @@ fn paint(hdc: HDC, hwnd: HWND) {
         session_text,
         weekly_pct,
         weekly_text,
+        weekly_scoped_pct,
         codex_session_pct,
         codex_session_text,
         codex_weekly_pct,
@@ -3362,6 +3393,7 @@ fn paint(hdc: HDC, hwnd: HWND) {
                 s.session_text.clone(),
                 s.weekly_percent,
                 s.weekly_text.clone(),
+                s.weekly_scoped_percent,
                 s.codex_session_percent,
                 s.codex_session_text.clone(),
                 s.codex_weekly_percent,
@@ -3426,6 +3458,7 @@ fn paint(hdc: HDC, hwnd: HWND) {
             &session_text,
             weekly_pct,
             &weekly_text,
+            weekly_scoped_pct,
             codex_session_pct,
             &codex_session_text,
             codex_weekly_pct,
@@ -3460,6 +3493,7 @@ fn draw_row(
     segments_override: Option<i32>,
     claude_percent: f64,
     claude_text: &str,
+    claude_underlay_pct: f64,
     codex_percent: f64,
     codex_text: &str,
     antigravity_percent: f64,
@@ -3531,6 +3565,7 @@ fn draw_row(
                 &claude_value_color,
                 claude_time,
                 &time_color,
+                claude_underlay_pct,
             );
             model_x += model_usage_width(layout_segments) + sc(MODEL_RIGHT_MARGIN);
         }
@@ -3548,6 +3583,7 @@ fn draw_row(
                 &codex_value_color,
                 codex_time,
                 &time_color,
+                0.0,
             );
             model_x += model_usage_width(layout_segments) + sc(MODEL_RIGHT_MARGIN);
         }
@@ -3565,6 +3601,7 @@ fn draw_row(
                 &antigravity_value_color,
                 antigravity_time,
                 &time_color,
+                0.0,
             );
         }
     }
@@ -3589,6 +3626,7 @@ fn draw_usage_bar(
     text_color: &Color,
     time_fraction: Option<f64>,
     time_color: &Color,
+    underlay_pct: f64,
 ) {
     let seg_h = sc(SEGMENT_H);
     let seg_gap = sc(SEGMENT_GAP);
@@ -3596,55 +3634,54 @@ fn draw_usage_bar(
 
     unsafe {
         let percent_clamped = percent.clamp(0.0, 100.0);
-        let segment_percent = 100.0 / segment_count as f64;
-        // Segments are distributed evenly across bar_w, so the bar spans the
-        // same total width regardless of how many segments it is split into.
-        let stride = bar_w + seg_gap;
 
-        for i in 0..segment_count {
-            let seg_left = bar_x + i * stride / segment_count;
-            let seg_right = bar_x + (i + 1) * stride / segment_count - seg_gap;
-            let seg_start = (i as f64) * segment_percent;
-            let seg_end = seg_start + segment_percent;
-
-            let seg_rect = RECT {
-                left: seg_left,
-                top: y,
-                right: seg_right,
-                bottom: y + seg_h,
-            };
-
-            if percent_clamped >= seg_end {
-                draw_rounded_rect(hdc, &seg_rect, accent, corner_r);
-            } else if percent_clamped <= seg_start {
-                draw_rounded_rect(hdc, &seg_rect, track, corner_r);
-            } else {
-                draw_rounded_rect(hdc, &seg_rect, track, corner_r);
-                let fraction = (percent_clamped - seg_start) / segment_percent;
-                let fill_width = ((seg_right - seg_left) as f64 * fraction) as i32;
-                if fill_width > 0 {
-                    let fill_rect = RECT {
-                        left: seg_left,
-                        top: y,
-                        right: seg_left + fill_width,
-                        bottom: y + seg_h,
-                    };
-                    let rgn = CreateRoundRectRgn(
-                        seg_rect.left,
-                        seg_rect.top,
-                        seg_rect.right + 1,
-                        seg_rect.bottom + 1,
-                        corner_r * 2,
-                        corner_r * 2,
-                    );
-                    let _ = SelectClipRgn(hdc, rgn);
-                    let brush = CreateSolidBrush(COLORREF(accent.to_colorref()));
-                    FillRect(hdc, &fill_rect, brush);
-                    let _ = DeleteObject(brush);
-                    let _ = SelectClipRgn(hdc, HRGN::default());
-                    let _ = DeleteObject(rgn);
-                }
-            }
+        if underlay_pct > 0.0 {
+            // Two-layer bar: the scoped-model usage (e.g. Fable) is drawn first
+            // in a muted color halfway between the accent and the empty track,
+            // then the primary usage is painted on top in the accent color.
+            // Where the primary bar stops, the muted underlay shows through,
+            // revealing how much further the scoped limit extends.
+            let underlay_color = accent.blend(*track, 0.5);
+            fill_bar_segments(
+                hdc,
+                bar_x,
+                y,
+                segment_count,
+                bar_w,
+                seg_h,
+                seg_gap,
+                corner_r,
+                underlay_pct.clamp(0.0, 100.0),
+                &underlay_color,
+                Some(track),
+            );
+            fill_bar_segments(
+                hdc,
+                bar_x,
+                y,
+                segment_count,
+                bar_w,
+                seg_h,
+                seg_gap,
+                corner_r,
+                percent_clamped,
+                accent,
+                None,
+            );
+        } else {
+            fill_bar_segments(
+                hdc,
+                bar_x,
+                y,
+                segment_count,
+                bar_w,
+                seg_h,
+                seg_gap,
+                corner_r,
+                percent_clamped,
+                accent,
+                Some(track),
+            );
         }
 
         // Thin elapsed-time bar just below the usage segments (issue #53):
@@ -3692,6 +3729,81 @@ fn draw_usage_bar(
             &mut text_rect,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE,
         );
+    }
+}
+
+/// Fill one row of usage segments up to `percent`. `empty_color` paints the
+/// unfilled portion when `Some`; passing `None` leaves whatever is already
+/// there untouched, so the row can be layered on top of an earlier pass.
+#[allow(clippy::too_many_arguments)]
+fn fill_bar_segments(
+    hdc: HDC,
+    bar_x: i32,
+    y: i32,
+    segment_count: i32,
+    bar_w: i32,
+    seg_h: i32,
+    seg_gap: i32,
+    corner_r: i32,
+    percent: f64,
+    fill_color: &Color,
+    empty_color: Option<&Color>,
+) {
+    unsafe {
+        let segment_percent = 100.0 / segment_count as f64;
+        // Segments are distributed evenly across bar_w, so the bar spans the
+        // same total width regardless of how many segments it is split into.
+        let stride = bar_w + seg_gap;
+
+        for i in 0..segment_count {
+            let seg_left = bar_x + i * stride / segment_count;
+            let seg_right = bar_x + (i + 1) * stride / segment_count - seg_gap;
+            let seg_start = (i as f64) * segment_percent;
+            let seg_end = seg_start + segment_percent;
+
+            let seg_rect = RECT {
+                left: seg_left,
+                top: y,
+                right: seg_right,
+                bottom: y + seg_h,
+            };
+
+            if percent >= seg_end {
+                draw_rounded_rect(hdc, &seg_rect, fill_color, corner_r);
+            } else if percent <= seg_start {
+                if let Some(empty) = empty_color {
+                    draw_rounded_rect(hdc, &seg_rect, empty, corner_r);
+                }
+            } else {
+                if let Some(empty) = empty_color {
+                    draw_rounded_rect(hdc, &seg_rect, empty, corner_r);
+                }
+                let fraction = (percent - seg_start) / segment_percent;
+                let fill_width = ((seg_right - seg_left) as f64 * fraction) as i32;
+                if fill_width > 0 {
+                    let fill_rect = RECT {
+                        left: seg_left,
+                        top: y,
+                        right: seg_left + fill_width,
+                        bottom: y + seg_h,
+                    };
+                    let rgn = CreateRoundRectRgn(
+                        seg_rect.left,
+                        seg_rect.top,
+                        seg_rect.right + 1,
+                        seg_rect.bottom + 1,
+                        corner_r * 2,
+                        corner_r * 2,
+                    );
+                    let _ = SelectClipRgn(hdc, rgn);
+                    let brush = CreateSolidBrush(COLORREF(fill_color.to_colorref()));
+                    FillRect(hdc, &fill_rect, brush);
+                    let _ = DeleteObject(brush);
+                    let _ = SelectClipRgn(hdc, HRGN::default());
+                    let _ = DeleteObject(rgn);
+                }
+            }
+        }
     }
 }
 
