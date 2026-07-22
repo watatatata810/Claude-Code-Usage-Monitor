@@ -4,6 +4,7 @@ use std::ffi::c_void;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
@@ -13,6 +14,10 @@ use crate::diagnose;
 use crate::localization::Strings;
 use crate::models::{AppUsageData, ScopedUsage, UsageData, UsageSection};
 
+// MAINTENANCE NOTE: /api/oauth/usage is an undocumented endpoint and Anthropic
+// does not support third-party tools calling it. Its behavior — including the
+// User-Agent-keyed rate-limit buckets (see claude_user_agent) — may change or
+// be blocked at any time.
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
 const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
@@ -32,6 +37,7 @@ pub enum PollError {
     NoCredentials,
     TokenExpired,
     RequestFailed,
+    RateLimited,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -577,6 +583,50 @@ fn resolve_windows_codex_path() -> String {
     "codex.cmd".to_string()
 }
 
+/// Fallback CLI version for the User-Agent when `claude --version` cannot be
+/// queried (e.g. Claude Code is only installed inside WSL).
+const CLAUDE_UA_FALLBACK_VERSION: &str = "2.1.217";
+
+static CLAUDE_USER_AGENT: OnceLock<String> = OnceLock::new();
+
+/// The usage endpoint keys its rate-limit bucket on the User-Agent header:
+/// requests that do not identify as the Claude Code CLI land in a bucket that
+/// returns persistent 429s regardless of polling frequency (Retry-After: 0).
+/// Send the installed CLI's own identity so requests use the normal bucket.
+fn claude_user_agent() -> &'static str {
+    CLAUDE_USER_AGENT.get_or_init(|| {
+        let version =
+            detect_claude_cli_version().unwrap_or_else(|| CLAUDE_UA_FALLBACK_VERSION.to_string());
+        format!("claude-code/{version}")
+    })
+}
+
+/// Extract the version number from `claude --version` output,
+/// e.g. "2.1.217 (Claude Code)" -> "2.1.217".
+fn detect_claude_cli_version() -> Option<String> {
+    let path = resolve_windows_claude_path();
+    let mut cmd = Command::new(&path);
+    cmd.arg("--version")
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let output = run_with_timeout(&mut cmd, Duration::from_secs(10))?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .split_whitespace()
+        .find(|token| {
+            token.split('.').count() >= 2
+                && token
+                    .split('.')
+                    .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .map(str::to_string)
+}
+
 fn build_agent() -> Result<ureq::Agent, PollError> {
     let tls = native_tls::TlsConnector::new().map_err(|_| PollError::RequestFailed)?;
     Ok(ureq::AgentBuilder::new()
@@ -713,6 +763,8 @@ fn try_usage_endpoint(token: &str) -> Result<Option<UsageData>, PollError> {
         .get(USAGE_URL)
         .set("Authorization", &format!("Bearer {token}"))
         .set("anthropic-beta", "oauth-2025-04-20")
+        .set("Content-Type", "application/json")
+        .set("User-Agent", claude_user_agent())
         .call()
     {
         Ok(resp) => resp,
@@ -721,6 +773,13 @@ fn try_usage_endpoint(token: &str) -> Result<Option<UsageData>, PollError> {
                 "usage endpoint returned auth error status {code}; re-login required"
             ));
             return Err(PollError::AuthRequired);
+        }
+        Err(ureq::Error::Status(429, resp)) => {
+            let retry_after = resp.header("retry-after").unwrap_or("").to_string();
+            diagnose::log(format!(
+                "usage endpoint rate limited (429, retry-after: '{retry_after}'); backing off"
+            ));
+            return Err(PollError::RateLimited);
         }
         Err(_) => return Ok(None),
     };

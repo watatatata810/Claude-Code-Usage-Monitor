@@ -140,7 +140,7 @@ pub struct Strings {
     pub window_title: &'static str,
     pub refresh: &'static str,
     pub update_frequency: &'static str,
-    pub one_minute: &'static str,
+    pub three_minutes: &'static str,
     pub five_minutes: &'static str,
     pub fifteen_minutes: &'static str,
     pub one_hour: &'static str,

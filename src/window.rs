@@ -9,6 +9,7 @@ use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
 use windows::Win32::System::Registry::*;
+use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
 use windows::Win32::UI::Accessibility::HWINEVENTHOOK;
 use windows::Win32::UI::Controls::Dialogs::{
@@ -83,6 +84,9 @@ struct AppState {
     icon_color_antigravity: Option<tray_icon::IconColorOverride>,
 
     data: Option<AppUsageData>,
+    /// Local wall-clock time ("HH:MM") of the last successful poll, shown as
+    /// "as of HH:MM" while cached data is displayed during outages.
+    last_success_time_text: String,
 
     poll_interval_ms: u32,
     retry_count: u32,
@@ -115,13 +119,15 @@ enum UpdateStatus {
 
 const RETRY_BASE_MS: u32 = 30_000; // 30 seconds
 
-const POLL_1_MIN: u32 = 60_000;
+// Minimum poll interval: community-tested safe floor for the undocumented
+// usage endpoint is 180 seconds (see Maciek-roboblog/Claude-Code-Usage-Monitor#202).
+const POLL_3_MIN: u32 = 180_000;
 const POLL_5_MIN: u32 = 300_000;
 const POLL_15_MIN: u32 = 900_000;
 const POLL_1_HOUR: u32 = 3_600_000;
 
 // Menu item IDs for update frequency
-const IDM_FREQ_1MIN: u16 = 10;
+const IDM_FREQ_3MIN: u16 = 10;
 const IDM_FREQ_5MIN: u16 = 11;
 const IDM_FREQ_15MIN: u16 = 12;
 const IDM_FREQ_1HOUR: u16 = 13;
@@ -459,7 +465,15 @@ fn save_state_settings() {
 fn tray_icon_data_from_state() -> Vec<tray_icon::TrayIconData> {
     let state = lock_state();
     match state.as_ref() {
-        Some(s) if s.last_poll_ok => {
+        // Show live data, or the last successful data while polling is failing
+        // transiently (network outage / rate limiting) — auth errors still fall
+        // through to the generic icons because re-login is required.
+        Some(s) if s.last_poll_ok || (s.data.is_some() && !s.auth_error_paused_polling) => {
+            let stale_suffix = if s.last_poll_ok || s.last_success_time_text.is_empty() {
+                String::new()
+            } else {
+                format!(" (as of {})", s.last_success_time_text)
+            };
             let mut icons = Vec::new();
             if s.show_claude_code {
                 icons.push(tray_icon::TrayIconData {
@@ -478,6 +492,7 @@ fn tray_icon_data_from_state() -> Vec<tray_icon::TrayIconData> {
                                 s.weekly_scoped_model, s.weekly_scoped_percent
                             ));
                         }
+                        tooltip.push_str(&stale_suffix);
                         tooltip
                     },
                     custom_color: s.icon_color_claude,
@@ -488,10 +503,11 @@ fn tray_icon_data_from_state() -> Vec<tray_icon::TrayIconData> {
                     kind: tray_icon::TrayIconKind::Codex,
                     percent: Some(s.codex_session_percent),
                     tooltip: format!(
-                        "{} 5h: {} | 7d: {}",
+                        "{} 5h: {} | 7d: {}{}",
                         s.language.strings().codex_model,
                         s.codex_session_text,
-                        s.codex_weekly_text
+                        s.codex_weekly_text,
+                        stale_suffix
                     ),
                     custom_color: s.icon_color_codex,
                 });
@@ -501,10 +517,11 @@ fn tray_icon_data_from_state() -> Vec<tray_icon::TrayIconData> {
                     kind: tray_icon::TrayIconKind::Antigravity,
                     percent: Some(s.antigravity_session_percent),
                     tooltip: format!(
-                        "{} 5h: {} | 7d: {}",
+                        "{} 5h: {} | 7d: {}{}",
                         s.language.strings().antigravity_model,
                         s.antigravity_session_text,
-                        s.antigravity_weekly_text
+                        s.antigravity_weekly_text,
+                        stale_suffix
                     ),
                     custom_color: s.icon_color_antigravity,
                 });
@@ -773,6 +790,11 @@ fn offset_for_drop_point(
     let desired_left = pt.x - taskbar_rect.left - drag_start_client_x;
     let offset = tray_left - taskbar_rect.left - total_widget_width() - desired_left;
     clamp_offset_for_taskbar(taskbar_hwnd, taskbar_rect, offset)
+}
+
+fn local_hhmm() -> String {
+    let now = unsafe { GetLocalTime() };
+    format!("{:02}:{:02}", now.wHour, now.wMinute)
 }
 
 fn now_unix_secs() -> u64 {
@@ -1582,7 +1604,8 @@ pub fn run() {
                     .as_ref()
                     .map(IconColorSetting::to_override),
                 data: None,
-                poll_interval_ms: settings.poll_interval_ms,
+                last_success_time_text: String::new(),
+                poll_interval_ms: settings.poll_interval_ms.max(POLL_3_MIN),
                 retry_count: 0,
                 force_notify_auth_error: false,
                 auth_error_paused_polling: false,
@@ -2097,6 +2120,7 @@ fn do_poll(send_hwnd: SendHwnd) {
 
                 s.data = Some(data);
                 s.last_poll_ok = true;
+                s.last_success_time_text = local_hhmm();
                 refresh_usage_texts(s);
 
                 // Recovered from errors — restore normal poll interval
@@ -2135,7 +2159,7 @@ fn do_poll(send_hwnd: SendHwnd) {
                     poller::CredentialWatchMode::AllSources,
                     poller::credential_watch_snapshot(poller::CredentialWatchMode::AllSources),
                 )),
-                poller::PollError::RequestFailed => None,
+                poller::PollError::RequestFailed | poller::PollError::RateLimited => None,
             };
             // Distinguish auth-required errors from transient errors.
             let notify_auth_error = {
@@ -2168,22 +2192,27 @@ fn do_poll(send_hwnd: SendHwnd) {
                             }
                         }
                         _ => {
-                            // Transient network / credential-missing errors: exponential backoff.
+                            // Transient network / rate-limit errors: exponential backoff.
                             s.force_notify_auth_error = false;
                             s.auth_error_paused_polling = false;
                             s.auth_watch_mode = poller::CredentialWatchMode::ActiveSource;
                             s.auth_watch_snapshot.clear();
-                            s.session_text = "...".to_string();
-                            s.weekly_text = "...".to_string();
-                            s.codex_session_text = "...".to_string();
-                            s.codex_weekly_text = "...".to_string();
-                            s.antigravity_session_text = "...".to_string();
-                            s.antigravity_weekly_text = "...".to_string();
+                            // Keep showing the last successful data (with an
+                            // "as of" tooltip) instead of blanking the display;
+                            // only show placeholders when nothing was fetched yet.
+                            if s.data.is_none() {
+                                s.session_text = "...".to_string();
+                                s.weekly_text = "...".to_string();
+                                s.codex_session_text = "...".to_string();
+                                s.codex_weekly_text = "...".to_string();
+                                s.antigravity_session_text = "...".to_string();
+                                s.antigravity_weekly_text = "...".to_string();
+                            }
                             s.retry_count = s.retry_count.saturating_add(1);
                             let backoff = RETRY_BASE_MS.saturating_mul(
                                 1u32.checked_shl(s.retry_count - 1).unwrap_or(u32::MAX),
                             );
-                            let retry_ms = backoff.min(s.poll_interval_ms);
+                            let retry_ms = backoff.min(s.poll_interval_ms).min(POLL_15_MIN);
                             unsafe {
                                 let _ = KillTimer(hwnd, TIMER_RESET_POLL);
                                 SetTimer(hwnd, TIMER_POLL, retry_ms, None);
@@ -2874,9 +2903,9 @@ unsafe extern "system" fn wnd_proc(
                 IDM_START_WITH_WINDOWS => {
                     set_startup_enabled(!is_startup_enabled());
                 }
-                IDM_FREQ_1MIN | IDM_FREQ_5MIN | IDM_FREQ_15MIN | IDM_FREQ_1HOUR => {
+                IDM_FREQ_3MIN | IDM_FREQ_5MIN | IDM_FREQ_15MIN | IDM_FREQ_1HOUR => {
                     let new_interval = match id {
-                        IDM_FREQ_1MIN => POLL_1_MIN,
+                        IDM_FREQ_3MIN => POLL_3_MIN,
                         IDM_FREQ_5MIN => POLL_5_MIN,
                         IDM_FREQ_15MIN => POLL_15_MIN,
                         IDM_FREQ_1HOUR => POLL_1_HOUR,
@@ -3090,7 +3119,7 @@ fn show_context_menu(hwnd: HWND) {
         // Update Frequency submenu
         let freq_menu = CreatePopupMenu().unwrap();
         let freq_items: [(u16, u32, &str); 4] = [
-            (IDM_FREQ_1MIN, POLL_1_MIN, strings.one_minute),
+            (IDM_FREQ_3MIN, POLL_3_MIN, strings.three_minutes),
             (IDM_FREQ_5MIN, POLL_5_MIN, strings.five_minutes),
             (IDM_FREQ_15MIN, POLL_15_MIN, strings.fifteen_minutes),
             (IDM_FREQ_1HOUR, POLL_1_HOUR, strings.one_hour),

@@ -6,7 +6,7 @@ pub(super) const STRINGS: Strings = Strings {
     window_title: "Monitor de Uso do Claude Code",
     refresh: "Atualizar",
     update_frequency: "Frequência de Atualização",
-    one_minute: "1 Minuto",
+    three_minutes: "3 Minutos",
     five_minutes: "5 Minutos",
     fifteen_minutes: "15 Minutos",
     one_hour: "1 Hora",
