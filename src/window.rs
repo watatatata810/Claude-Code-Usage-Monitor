@@ -578,14 +578,27 @@ fn tray_usage_summary_lines(
                 .weekly_label
                 .as_deref()
                 .unwrap_or(strings.weekly_window);
-            Some(format!(
+            let mut line = format!(
                 "{} {}: {:.0}% | {}: {:.0}%",
                 language.text(descriptor.display_name),
                 strings.session_window,
                 shown(usage.session.percentage),
                 weekly_label,
                 shown(usage.weekly.percentage),
-            ))
+            );
+            // A model-scoped weekly limit (e.g. Fable) gets its own figure.
+            if let Some(scoped) = usage
+                .weekly_scoped
+                .as_ref()
+                .filter(|scoped| !scoped.model_name.is_empty())
+            {
+                line.push_str(&format!(
+                    " | {}: {:.0}%",
+                    scoped.model_name,
+                    shown(scoped.section.percentage)
+                ));
+            }
+            Some(line)
         })
         .collect()
 }

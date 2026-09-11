@@ -18,6 +18,16 @@ A lightweight, open-source Windows taskbar widget for monitoring Claude Code usa
 - Provides built-in themes and a visual Theme Studio for custom layouts
 - Collects no analytics or telemetry
 
+## About this fork
+
+This is a personal fork of [CodeZeno/Claude-Code-Usage-Monitor](https://github.com/CodeZeno/Claude-Code-Usage-Monitor). It tracks upstream and adds:
+
+- Reads the model-scoped weekly limit (for example the Fable allowance) from the Claude usage endpoint and exposes it to themes as `claude.weekly_scoped.*` (`percentage`, `remaining`, `display`, `available`, `label`, `reset.*`). The tray tooltip lists it after the shared 7-day figure.
+- Two extra text formats for theme authors: `duration_ceil` (rounded up, one decimal above an hour: `1.8h`, `6.9d`, so the true time left is never longer than shown) and a `usage_line_precise` template (zero-padded percentage plus `duration_ceil`). Numeric formats such as `00` pad the whole part.
+- A built-in **Classic v1 (WATA)** theme: the Classic layout with the precise usage line, a 7-day bar split into one segment per day with the model-scoped limit drawn underneath it, and thin elapsed-time bars beneath each usage bar. Duplicate it in Theme Studio to customize.
+
+Upstream's own features are unchanged. The sections below are upstream's README.
+
 ## Requirements
 
 - Windows 10 or Windows 11

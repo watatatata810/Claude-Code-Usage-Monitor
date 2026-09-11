@@ -504,6 +504,7 @@ fn usage_lines_handle_loading_errors_missing_resets_and_language() {
                 resets_at: None,
             },
             weekly: crate::models::UsageSection::default(),
+            weekly_scoped: None,
             weekly_label: None,
             monthly: None,
             credits: None,
@@ -678,6 +679,7 @@ fn reset_stats_and_duration_formats_are_available_to_every_provider() {
                 resets_at: Some(reset),
             },
             weekly: crate::models::UsageSection::default(),
+            weekly_scoped: None,
             weekly_label: None,
             monthly: None,
             credits: None,
@@ -1241,8 +1243,9 @@ fn starter_tray_icons_follow_enabled_providers() {
 
 #[test]
 fn built_in_themes_are_valid_and_cannot_be_saved_as_editable_themes() {
-    assert_eq!(BUILTIN_THEME_SOURCES.len(), 1);
+    assert_eq!(BUILTIN_THEME_SOURCES.len(), 2);
     assert_eq!(BUILTIN_THEME_SOURCES[0].0, CLASSIC_THEME_ID);
+    assert_eq!(BUILTIN_THEME_SOURCES[1].0, CLASSIC_WATA_THEME_ID);
     assert!(REMOVED_BUILTIN_THEME_IDS
         .iter()
         .all(|id| !is_builtin_theme_id(id)));
@@ -2027,4 +2030,155 @@ fn the_classic_theme_shows_one_badge_digit_group_in_both_usage_directions() {
             }
         }
     }
+}
+
+#[test]
+fn duration_ceil_never_understates_the_time_left() {
+    let context = DataContext::default();
+    // 1h43m reads 1.8h: the true remaining time is never longer than shown.
+    assert_eq!(format_value(6_180.0, "duration_ceil", &context), "1.8h");
+    assert_eq!(format_value(3_600.0, "duration_ceil", &context), "1.0h");
+    assert_eq!(format_value(3_601.0, "duration_ceil", &context), "1.1h");
+    // 1d10h reads 1.5d (34h / 24h = 1.4166 -> up).
+    assert_eq!(format_value(122_400.0, "duration_ceil", &context), "1.5d");
+    assert_eq!(format_value(86_400.0, "duration_ceil", &context), "1.0d");
+    // Below an hour: whole minutes, rounded up.
+    assert_eq!(format_value(3_599.0, "duration_ceil", &context), "60m");
+    assert_eq!(format_value(61.0, "duration_ceil", &context), "2m");
+    assert_eq!(format_value(59.0, "duration_ceil", &context), "59s");
+    assert_eq!(format_value(0.0, "duration_ceil", &context), "now");
+}
+
+#[test]
+fn numeric_formats_pad_the_whole_part_when_asked() {
+    let context = DataContext::default();
+    assert_eq!(format_value(7.0, "00", &context), "07");
+    assert_eq!(format_value(7.4, "00", &context), "07");
+    assert_eq!(format_value(42.0, "00", &context), "42");
+    assert_eq!(format_value(100.0, "00", &context), "100");
+    assert_eq!(format_value(7.0, "0", &context), "7");
+    assert_eq!(format_value(7.26, "00.0", &context), "07.3");
+    assert_eq!(format_value(-7.0, "00", &context), "-07");
+}
+
+#[test]
+fn precise_usage_lines_pad_percentages_and_round_countdowns_up() {
+    let reset = std::time::SystemTime::now() + std::time::Duration::from_secs(6_180);
+    let usage = crate::models::AppUsageData::from_iter([(
+        ProviderId::Claude,
+        crate::models::UsageData {
+            session: crate::models::UsageSection {
+                percentage: 7.0,
+                resets_at: Some(reset),
+            },
+            ..Default::default()
+        },
+    )]);
+    let context = DataContext::from_usage(Some(&usage), &Canvas::default());
+    assert_eq!(
+        format_template("{claude.session.display:usage_line_precise}", &context),
+        "07% · 1.8h"
+    );
+    assert_eq!(
+        format_template("{claude.session.display:usage_line}", &context),
+        "7% · 1h"
+    );
+    // Without a reset time only the padded percentage is shown.
+    assert_eq!(
+        format_template("{claude.weekly.display:usage_line_precise}", &context),
+        "00%"
+    );
+}
+
+#[test]
+fn model_scoped_weekly_limits_are_exposed_as_their_own_window() {
+    let reset = std::time::SystemTime::now() + std::time::Duration::from_secs(200_000);
+    let usage = crate::models::AppUsageData::from_iter([(
+        ProviderId::Claude,
+        crate::models::UsageData {
+            weekly: crate::models::UsageSection {
+                percentage: 30.0,
+                resets_at: Some(reset),
+            },
+            weekly_scoped: Some(crate::models::ScopedUsage {
+                model_name: "Fable".into(),
+                section: crate::models::UsageSection {
+                    percentage: 77.0,
+                    resets_at: Some(reset),
+                },
+            }),
+            ..Default::default()
+        },
+    )]);
+    let context = DataContext::from_usage(Some(&usage), &Canvas::default());
+    assert_eq!(
+        evaluate("claude.weekly_scoped.available", &context).unwrap(),
+        1.0
+    );
+    assert_eq!(
+        evaluate("claude.weekly_scoped.percentage", &context).unwrap(),
+        77.0
+    );
+    assert_eq!(
+        evaluate("claude.weekly_scoped.remaining", &context).unwrap(),
+        23.0
+    );
+    assert_eq!(
+        format_template("{claude.weekly_scoped.label}", &context),
+        "Fable"
+    );
+    assert!(evaluate("claude.weekly_scoped.reset.seconds", &context).unwrap() > 199_000.0);
+    assert_eq!(
+        format_template("{claude.weekly_scoped:usage_line}", &context),
+        "77% · 2d"
+    );
+    // The shared weekly window is untouched by the scoped one.
+    assert_eq!(evaluate("claude.weekly.percentage", &context).unwrap(), 30.0);
+    // Providers without one expose safe zeros and an availability flag.
+    assert_eq!(
+        evaluate("codex.weekly_scoped.available", &context).unwrap(),
+        0.0
+    );
+    assert_eq!(
+        evaluate("codex.weekly_scoped.percentage", &context).unwrap(),
+        0.0
+    );
+}
+
+#[test]
+fn the_wata_classic_theme_renders_without_warnings() {
+    let theme: ThemeDocument =
+        serde_json::from_str(include_str!("../themes/classic-wata.json")).unwrap();
+    let mut theme = theme;
+    theme.prepare_runtime();
+    assert!(theme.validate().is_empty(), "{:?}", theme.validate());
+    assert!(theme.is_builtin());
+    let reset = std::time::SystemTime::now() + std::time::Duration::from_secs(6_180);
+    let usage = crate::models::AppUsageData::from_iter([(
+        ProviderId::Claude,
+        crate::models::UsageData {
+            session: crate::models::UsageSection {
+                percentage: 40.0,
+                resets_at: Some(reset),
+            },
+            weekly: crate::models::UsageSection {
+                percentage: 30.0,
+                resets_at: Some(reset),
+            },
+            weekly_scoped: Some(crate::models::ScopedUsage {
+                model_name: "Fable".into(),
+                section: crate::models::UsageSection {
+                    percentage: 77.0,
+                    resets_at: Some(reset),
+                },
+            }),
+            ..Default::default()
+        },
+    )]);
+    let rendered = render_theme(&theme, Some(&usage));
+    assert!(rendered.warnings.is_empty(), "{:?}", rendered.warnings);
+    // 12px wider than Classic to fit the precise countdown text.
+    assert_eq!(rendered.height, 46);
+    let classic = render_theme(&ThemeDocument::starter(), Some(&usage));
+    assert_eq!(rendered.width, classic.width + 12);
 }

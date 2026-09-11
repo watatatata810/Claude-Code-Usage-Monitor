@@ -170,6 +170,7 @@ pub(super) fn fetch_antigravity_usage_from_endpoint(
     Ok(UsageData {
         session,
         weekly,
+        weekly_scoped: None,
         weekly_label: None,
         monthly: None,
         credits: None,

@@ -29,10 +29,24 @@ pub struct CreditsSection {
     pub total: f64,
 }
 
+/// A weekly limit that applies to a single model only (for example the Fable
+/// allowance on Claude plans). It runs alongside the shared 7-day window and
+/// is reported separately so themes can layer it under or beside that bar.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ScopedUsage {
+    /// Display name of the model the limit is scoped to, as reported by the
+    /// provider. Empty when the provider did not name it.
+    pub model_name: String,
+    pub section: UsageSection,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct UsageData {
     pub session: UsageSection,
     pub weekly: UsageSection,
+    /// Optional model-scoped weekly limit (see [`ScopedUsage`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weekly_scoped: Option<ScopedUsage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weekly_label: Option<String>,
     /// Optional longer-window usage (e.g. the OpenCode Go monthly window).

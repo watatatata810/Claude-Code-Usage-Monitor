@@ -83,6 +83,7 @@ fn poll_dashboard(credentials: &DashboardCredentials) -> Result<UsageData, PollE
     Ok(UsageData {
         session,
         weekly,
+        weekly_scoped: None,
         weekly_label,
         // The monthly window is kept available to themes alongside the
         // auto-selected `weekly` slot (which prefers the more constrained

@@ -22,10 +22,21 @@ pub const THEME_SCHEMA_VERSION: u32 = 1;
 pub const CLASSIC_THEME_ID: &str = "classic-usage-widget";
 pub const MINECRAFT_THEME_ID: &str = "theme-minecraft";
 
-const BUILTIN_THEME_SOURCES: &[(&str, &str)] = &[(
-    CLASSIC_THEME_ID,
-    include_str!("themes/classic-usage-widget.json"),
-)];
+pub const CLASSIC_WATA_THEME_ID: &str = "classic-wata";
+
+const BUILTIN_THEME_SOURCES: &[(&str, &str)] = &[
+    (
+        CLASSIC_THEME_ID,
+        include_str!("themes/classic-usage-widget.json"),
+    ),
+    // This fork's variant of Classic: precise countdowns, a 7-segment weekly
+    // bar with the model-scoped (Fable) limit underneath, and elapsed-time
+    // bars. Read-only like Classic; duplicate it in Theme Studio to edit.
+    (
+        CLASSIC_WATA_THEME_ID,
+        include_str!("themes/classic-wata.json"),
+    ),
+];
 
 /// Bundled starting points are copied into the managed library only when they
 /// are missing. Their ids are deliberately excluded from `is_builtin_theme_id`
@@ -1459,6 +1470,35 @@ impl DataContext {
             &format!("{name}.monthly.available"),
             monthly.is_some() as u8 as f64,
         );
+        // A weekly limit that applies to one model only (e.g. Fable). It sits
+        // alongside the shared 7-day window, so themes get it as a separate
+        // window with the model name as its label.
+        let weekly_scoped = usage.and_then(|usage| usage.weekly_scoped.as_ref());
+        let scoped_percentage = weekly_scoped
+            .map(|scoped| scoped.section.percentage)
+            .unwrap_or(0.0);
+        self.insert_string(
+            &format!("{name}.weekly_scoped.label"),
+            weekly_scoped
+                .map(|scoped| scoped.model_name.as_str())
+                .unwrap_or(""),
+        );
+        self.insert(
+            &format!("{name}.weekly_scoped.percentage"),
+            scoped_percentage,
+        );
+        self.insert(
+            &format!("{name}.weekly_scoped.remaining"),
+            100.0 - scoped_percentage,
+        );
+        self.insert(
+            &format!("{name}.weekly_scoped.display"),
+            display(scoped_percentage),
+        );
+        self.insert(
+            &format!("{name}.weekly_scoped.available"),
+            weekly_scoped.is_some() as u8 as f64,
+        );
         self.insert(&format!("{name}.available"), usage.is_some() as u8 as f64);
         // Carried over from an earlier poll: real figures, not current ones.
         self.insert(
@@ -1524,11 +1564,14 @@ impl DataContext {
         };
         let (monthly_unix, monthly_seconds) =
             reset_value(monthly.and_then(|value| value.resets_at));
+        let (weekly_scoped_unix, weekly_scoped_seconds) =
+            reset_value(weekly_scoped.and_then(|value| value.section.resets_at));
         for (window, unix, seconds) in [
             ("session", session_unix, session_seconds),
             ("five_hour", five_hour_unix, five_hour_seconds),
             ("weekly", weekly_unix, weekly_seconds),
             ("monthly", monthly_unix, monthly_seconds),
+            ("weekly_scoped", weekly_scoped_unix, weekly_scoped_seconds),
         ] {
             self.insert(&format!("{name}.{window}.reset.unix"), unix);
             self.insert(&format!("{name}.{window}.reset.seconds"), seconds);

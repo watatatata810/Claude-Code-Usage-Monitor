@@ -7,6 +7,7 @@ fn usage_with_session_percent(percentage: f64) -> UsageData {
             resets_at: None,
         },
         weekly: UsageSection::default(),
+        weekly_scoped: None,
         weekly_label: None,
         monthly: None,
         credits: None,

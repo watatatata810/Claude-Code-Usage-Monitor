@@ -380,22 +380,34 @@ pub fn time_until_display_change(resets_at: Option<SystemTime>) -> Option<Durati
     Some(time_until_display_change_from_secs(remaining.as_secs()))
 }
 
+/// Countdown text is redrawn when it would read differently. The finest
+/// display in use is the rounded-up tenth of an hour or day
+/// (`duration_ceil`), whose steps also land on every whole hour and day, so
+/// one schedule serves the whole-unit formats as well.
 fn time_until_display_change_from_secs(total_secs: u64) -> Duration {
-    let total_mins = total_secs / 60;
-    let total_hours = total_secs / 3600;
-    let total_days = total_secs / 86400;
-
-    let current_bucket_start = if total_days >= 1 {
-        total_days * 86400
-    } else if total_hours >= 1 {
-        total_hours * 3600
-    } else if total_mins >= 1 {
-        total_mins * 60
+    let secs_until_change = if total_secs >= 86_400 {
+        // The display may also switch to hours when it drops below one day.
+        secs_until_ceil_display_change(total_secs, 8_640).min(total_secs - 86_400 + 1)
+    } else if total_secs >= 3_600 {
+        secs_until_ceil_display_change(total_secs, 360).min(total_secs - 3_600 + 1)
+    } else if total_secs >= 60 {
+        secs_until_ceil_display_change(total_secs, 60)
     } else {
-        total_secs
+        1
     };
 
-    Duration::from_secs(total_secs.saturating_sub(current_bucket_start) + 1)
+    Duration::from_secs(secs_until_change)
+}
+
+/// Seconds until a rounded-up display bucket of the given size shows a
+/// different value.
+fn secs_until_ceil_display_change(total_secs: u64, bucket_secs: u64) -> u64 {
+    let rem = total_secs % bucket_secs;
+    if rem == 0 {
+        bucket_secs
+    } else {
+        rem
+    }
 }
 
 /// Returns true if either section has reached "now" (reset time has passed).

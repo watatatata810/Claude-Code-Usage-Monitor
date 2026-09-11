@@ -487,7 +487,25 @@ pub fn parse_color(source: &str) -> Option<Rgba> {
     }
 }
 
+/// How a `usage_line` token renders its figures.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum UsageLineStyle {
+    /// Whole percent, countdown truncated to the largest whole unit.
+    Standard,
+    /// Percent padded to two digits so columns line up, countdown rounded up
+    /// with one decimal so the true remaining time is never longer than shown.
+    Precise,
+}
+
 pub(super) fn format_usage_line(base: &str, context: &DataContext) -> Option<String> {
+    format_usage_line_styled(base, context, UsageLineStyle::Standard)
+}
+
+pub(super) fn format_usage_line_styled(
+    base: &str,
+    context: &DataContext,
+    style: UsageLineStyle,
+) -> Option<String> {
     let mut parts = base.split('.');
     let provider = parts.next()?;
     let window = parts.next()?;
@@ -505,11 +523,15 @@ pub(super) fn format_usage_line(base: &str, context: &DataContext) -> Option<Str
         )
         || !matches!(
             window,
-            "session" | "five_hour" | "weekly" | "monthly" | "credits"
+            "session" | "five_hour" | "weekly" | "monthly" | "weekly_scoped" | "credits"
         )
     {
         return None;
     }
+    let (percent_format, duration_format) = match style {
+        UsageLineStyle::Standard => ("0", "duration_short"),
+        UsageLineStyle::Precise => ("00", "duration_ceil"),
+    };
     if context.get("data.loading").unwrap_or(0.0) != 0.0 {
         return Some("--".into());
     }
@@ -522,7 +544,7 @@ pub(super) fn format_usage_line(base: &str, context: &DataContext) -> Option<Str
     let percentage = context
         .get(&format!("{provider}.{window}.{metric}"))
         .unwrap_or(0.0);
-    let percentage = format_value(percentage, "0", context);
+    let percentage = format_value(percentage, percent_format, context);
     if context
         .get(&format!("{provider}.{window}.reset.unix"))
         .unwrap_or(0.0)
@@ -535,7 +557,7 @@ pub(super) fn format_usage_line(base: &str, context: &DataContext) -> Option<Str
         .unwrap_or(0.0);
     Some(format!(
         "{percentage}% · {}",
-        format_value(seconds, "duration_short", context)
+        format_value(seconds, duration_format, context)
     ))
 }
 
@@ -567,6 +589,34 @@ pub(super) fn format_value(value: f64, format: &str, context: &DataContext) -> S
             format!("{hours}{}", localized(context, "i18n.hour_suffix", "h"))
         } else if minutes > 0 {
             format!("{minutes}{}", localized(context, "i18n.minute_suffix", "m"))
+        } else if seconds > 0 {
+            format!("{seconds}{}", localized(context, "i18n.second_suffix", "s"))
+        } else {
+            localized(context, "i18n.now", "now").to_string()
+        };
+    }
+    if format.eq_ignore_ascii_case("duration_ceil") {
+        // Rounded up at every step so the display never claims less time is
+        // left than there really is: 1h01m reads 1.1h, 59m30s reads 60m.
+        let seconds = value.max(0.0).ceil() as u64;
+        return if seconds >= 86_400 {
+            format!(
+                "{:.1}{}",
+                seconds.div_ceil(8_640) as f64 / 10.0,
+                localized(context, "i18n.day_suffix", "d")
+            )
+        } else if seconds >= 3_600 {
+            format!(
+                "{:.1}{}",
+                seconds.div_ceil(360) as f64 / 10.0,
+                localized(context, "i18n.hour_suffix", "h")
+            )
+        } else if seconds >= 60 {
+            format!(
+                "{}{}",
+                seconds.div_ceil(60),
+                localized(context, "i18n.minute_suffix", "m")
+            )
         } else if seconds > 0 {
             format!("{seconds}{}", localized(context, "i18n.second_suffix", "s"))
         } else {
@@ -614,6 +664,24 @@ pub(super) fn format_value(value: f64, format: &str, context: &DataContext) -> S
         }
         if result.ends_with('.') {
             result.pop();
+        }
+    }
+    // Two or more zeros before the point ask for a minimum width, so "00"
+    // renders 7 as "07" and single-digit figures line up with the rest.
+    let minimum_whole_digits = format
+        .split('.')
+        .next()
+        .map(|part| part.chars().filter(|c| *c == '0').count())
+        .unwrap_or(0);
+    if minimum_whole_digits > 1 {
+        let (sign, digits) = result
+            .strip_prefix('-')
+            .map(|v| ("-", v.to_string()))
+            .unwrap_or(("", result.clone()));
+        let whole_len = digits.split('.').next().map(str::len).unwrap_or(0);
+        if whole_len < minimum_whole_digits {
+            let padding = "0".repeat(minimum_whole_digits - whole_len);
+            result = format!("{sign}{padding}{digits}");
         }
     }
     if format.contains(',') {

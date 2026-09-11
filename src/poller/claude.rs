@@ -11,7 +11,7 @@ use super::{
     PollError,
 };
 use crate::diagnose;
-use crate::models::{CreditsSection, UsageData};
+use crate::models::{CreditsSection, ScopedUsage, UsageData, UsageSection};
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -23,6 +23,49 @@ struct UsageResponse {
     five_hour: Option<UsageBucket>,
     seven_day: Option<UsageBucket>,
     spend: Option<SpendResponse>,
+    /// Structured limit list. A weekly limit scoped to one model (for
+    /// example Fable) only appears here; the top-level buckets stay silent
+    /// about it.
+    #[serde(default)]
+    limits: Vec<UsageLimit>,
+}
+
+#[derive(Deserialize)]
+struct UsageLimit {
+    kind: Option<String>,
+    percent: Option<f64>,
+    resets_at: Option<String>,
+    scope: Option<UsageLimitScope>,
+}
+
+#[derive(Deserialize)]
+struct UsageLimitScope {
+    model: Option<UsageLimitModel>,
+}
+
+#[derive(Deserialize)]
+struct UsageLimitModel {
+    display_name: Option<String>,
+}
+
+/// The model-scoped weekly limit from the limits list, if the plan has one.
+fn scoped_weekly_limit(limits: &[UsageLimit]) -> Option<ScopedUsage> {
+    let limit = limits
+        .iter()
+        .find(|limit| limit.kind.as_deref() == Some("weekly_scoped"))?;
+    let model_name = limit
+        .scope
+        .as_ref()
+        .and_then(|scope| scope.model.as_ref())
+        .and_then(|model| model.display_name.clone())
+        .unwrap_or_default();
+    Some(ScopedUsage {
+        model_name,
+        section: UsageSection {
+            percentage: limit.percent.unwrap_or(0.0),
+            resets_at: parse_iso8601(limit.resets_at.as_deref()),
+        },
+    })
 }
 
 /// Paid credits that carry the account past its plan limits. Amounts are
@@ -158,6 +201,8 @@ pub(super) fn try_usage_endpoint(token: &str) -> Result<Option<UsageData>, PollE
         data.weekly.percentage = bucket.utilization;
         data.weekly.resets_at = parse_iso8601(bucket.resets_at.as_deref());
     }
+
+    data.weekly_scoped = scoped_weekly_limit(&response.limits);
 
     data.credits = response
         .spend
@@ -793,11 +838,40 @@ mod tests {
         if let Some(bucket) = &response.five_hour {
             data.session.percentage = bucket.utilization;
         }
+        data.weekly_scoped = scoped_weekly_limit(&response.limits);
         data.credits = response
             .spend
             .as_ref()
             .and_then(|spend| claude_credits(spend, &data));
         data
+    }
+
+    #[test]
+    fn a_model_scoped_weekly_limit_is_read_from_the_limits_list() {
+        // The shared 7-day bucket says nothing about the Fable allowance; it
+        // only appears as a scoped entry in the structured list.
+        let json = r#"{"five_hour": {"utilization": 12.0},
+                       "seven_day": {"utilization": 30.0},
+                       "limits": [
+                         {"kind": "five_hour", "percent": 12.0},
+                         {"kind": "weekly_scoped", "percent": 77.0,
+                          "resets_at": "2026-07-22T00:00:00Z",
+                          "scope": {"model": {"display_name": "Fable"}}}
+                       ]}"#;
+        let data = usage_from_json(json);
+        let scoped = data.weekly_scoped.expect("scoped limit present");
+        assert_eq!(scoped.model_name, "Fable");
+        assert_eq!(scoped.section.percentage, 77.0);
+        assert!(scoped.section.resets_at.is_some());
+        assert_eq!(data.weekly.percentage, 30.0);
+
+        // Plans without one leave the field empty, and an absent list is fine.
+        assert!(usage_from_json(r#"{"five_hour": {"utilization": 1.0}}"#)
+            .weekly_scoped
+            .is_none());
+        assert!(usage_from_json(r#"{"limits": [{"kind": "five_hour"}]}"#)
+            .weekly_scoped
+            .is_none());
     }
 
     fn status_error(code: u16) -> ureq::Error {

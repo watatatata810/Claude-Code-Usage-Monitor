@@ -232,6 +232,7 @@ fn cursor_usage_from_summary(response: CursorUsageSummaryResponse) -> Option<Usa
             percentage: api,
             resets_at: reset,
         },
+        weekly_scoped: None,
         weekly_label: Some("API".into()),
         monthly: None,
         credits: None,
