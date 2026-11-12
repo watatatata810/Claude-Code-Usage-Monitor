@@ -471,8 +471,9 @@
               "color": "#444444FF"
             },
             "corner_radius": "0",
-            "segments": 0,
-            "segment_gap": "0"
+            "segments": 10,
+            "segment_gap": "1",
+            "segments_expression": "ceil(10 / max(1, providers.count))"
           }
         },
         {
@@ -541,8 +542,9 @@
               "color": "#AAAAAAFF"
             },
             "corner_radius": "0",
-            "segments": 0,
-            "segment_gap": "0"
+            "segments": 10,
+            "segment_gap": "1",
+            "segments_expression": "ceil(10 / max(1, providers.count))"
           }
         },
         {
@@ -634,8 +636,8 @@
               "color": "#444444FF"
             },
             "corner_radius": "0",
-            "segments": 0,
-            "segment_gap": "0"
+            "segments": 7,
+            "segment_gap": "1"
           }
         },
         {
@@ -727,8 +729,8 @@
               "color": "#AAAAAAFF"
             },
             "corner_radius": "0",
-            "segments": 0,
-            "segment_gap": "0"
+            "segments": 7,
+            "segment_gap": "1"
           }
         },
         {
@@ -805,8 +807,9 @@
               "color": "#444444FF"
             },
             "corner_radius": "0",
-            "segments": 0,
-            "segment_gap": "0"
+            "segments": 10,
+            "segment_gap": "1",
+            "segments_expression": "ceil(10 / max(1, providers.count))"
           }
         },
         {
@@ -875,8 +878,9 @@
               "color": "#AAAAAAFF"
             },
             "corner_radius": "0",
-            "segments": 0,
-            "segment_gap": "0"
+            "segments": 10,
+            "segment_gap": "1",
+            "segments_expression": "ceil(10 / max(1, providers.count))"
           }
         },
         {
@@ -945,8 +949,9 @@
               "color": "#444444FF"
             },
             "corner_radius": "0",
-            "segments": 0,
-            "segment_gap": "0"
+            "segments": 10,
+            "segment_gap": "1",
+            "segments_expression": "ceil(10 / max(1, providers.count))"
           }
         },
         {
@@ -1015,8 +1020,9 @@
               "color": "#AAAAAAFF"
             },
             "corner_radius": "0",
-            "segments": 0,
-            "segment_gap": "0"
+            "segments": 10,
+            "segment_gap": "1",
+            "segments_expression": "ceil(10 / max(1, providers.count))"
           }
         },
         {
@@ -1093,8 +1099,9 @@
               "color": "#444444FF"
             },
             "corner_radius": "0",
-            "segments": 0,
-            "segment_gap": "0"
+            "segments": 10,
+            "segment_gap": "1",
+            "segments_expression": "ceil(10 / max(1, providers.count))"
           }
         },
         {
@@ -1163,8 +1170,9 @@
               "color": "#AAAAAAFF"
             },
             "corner_radius": "0",
-            "segments": 0,
-            "segment_gap": "0"
+            "segments": 10,
+            "segment_gap": "1",
+            "segments_expression": "ceil(10 / max(1, providers.count))"
           }
         },
         {
@@ -1233,8 +1241,9 @@
               "color": "#444444FF"
             },
             "corner_radius": "0",
-            "segments": 0,
-            "segment_gap": "0"
+            "segments": 10,
+            "segment_gap": "1",
+            "segments_expression": "ceil(10 / max(1, providers.count))"
           }
         },
         {
@@ -1303,8 +1312,9 @@
               "color": "#AAAAAAFF"
             },
             "corner_radius": "0",
-            "segments": 0,
-            "segment_gap": "0"
+            "segments": 10,
+            "segment_gap": "1",
+            "segments_expression": "ceil(10 / max(1, providers.count))"
           }
         },
         {
