@@ -32,17 +32,28 @@ pub(super) fn show_context_menu_document(
         );
         let mut point = POINT::default();
         let _ = GetCursorPos(&mut point);
-        let _ = SetForegroundWindow(hwnd);
+        // A taskbar-hosted surface is a child of Shell_TrayWnd, so making it the
+        // foreground window activates Explorer's taskbar instead, and Explorer
+        // then takes the foreground again while the menu is open. That
+        // foreground change cancels the menu without any click. Own the menu
+        // with a hidden top-level window of this process instead.
+        let owner = context_menu_owner_window().unwrap_or_else(|| {
+            diagnose::log("context menu owner window unavailable; using the surface");
+            hwnd
+        });
+        let _ = SetForegroundWindow(owner);
         let selected = TrackPopupMenu(
             menu,
             TPM_RIGHTBUTTON | TPM_RETURNCMD,
             point.x,
             point.y,
             None,
-            hwnd,
+            owner,
             None,
         )
         .0 as usize;
+        // Documented TrackPopupMenu workaround: lets the menu close cleanly.
+        let _ = PostMessageW(Some(owner), WM_NULL, WPARAM(0), LPARAM(0));
         let _ = DestroyMenu(menu);
         if selected >= 1_000 {
             if let Some(action) = actions.get(selected - 1_000).cloned() {
@@ -50,6 +61,58 @@ pub(super) fn show_context_menu_document(
             }
         }
     }
+}
+
+static CONTEXT_MENU_OWNER: AtomicIsize = AtomicIsize::new(0);
+
+unsafe extern "system" fn context_menu_owner_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    DefWindowProcW(hwnd, msg, wparam, lparam)
+}
+
+/// Hidden, never-shown top-level window that owns the context menu. Created on
+/// the UI thread on first use and kept for the life of the process.
+unsafe fn context_menu_owner_window() -> Option<HWND> {
+    let existing = CONTEXT_MENU_OWNER.load(Ordering::Acquire);
+    if existing != 0 {
+        let hwnd = HWND(existing as *mut core::ffi::c_void);
+        if IsWindow(Some(hwnd)).as_bool() {
+            return Some(hwnd);
+        }
+    }
+    let instance = GetModuleHandleW(PCWSTR::null()).ok()?;
+    let class = native_interop::wide_str("CCUMContextMenuOwner");
+    let wc = WNDCLASSEXW {
+        cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+        lpfnWndProc: Some(context_menu_owner_proc),
+        hInstance: HINSTANCE(instance.0),
+        lpszClassName: PCWSTR::from_raw(class.as_ptr()),
+        ..Default::default()
+    };
+    // Registering twice fails harmlessly; the class is already available then.
+    RegisterClassExW(&wc);
+    let title = native_interop::wide_str("Usage monitor context menu owner");
+    let hwnd = CreateWindowExW(
+        WS_EX_TOOLWINDOW,
+        PCWSTR::from_raw(class.as_ptr()),
+        PCWSTR::from_raw(title.as_ptr()),
+        WS_POPUP,
+        0,
+        0,
+        0,
+        0,
+        None,
+        None,
+        Some(HINSTANCE(instance.0)),
+        None,
+    )
+    .ok()?;
+    CONTEXT_MENU_OWNER.store(hwnd.0 as isize, Ordering::Release);
+    Some(hwnd)
 }
 
 pub(super) fn context_menu_data_context(origin: Option<&(usize, String)>) -> DataContext {
